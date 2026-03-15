@@ -1,0 +1,408 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>How Search Works at Scale | Latent Value Lab</title>
+  <meta name="description" content="Building a search system that handles millions of queries per day requires far more than an inverted index. Here's what production search actually looks like." />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap" rel="stylesheet" />
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    :root {
+      --bg:        #0f172a;
+      --surface:   #1e293b;
+      --surface2:  #263348;
+      --border:    #334155;
+      --text:      #f8fafc;
+      --muted:     #94a3b8;
+      --accent:    #38bdf8;
+      --accent-dim:#0c4a6e;
+      --radius:    12px;
+      --transition: 0.2s ease;
+    }
+
+    html { scroll-behavior: smooth; }
+    body {
+      font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      line-height: 1.6;
+      -webkit-font-smoothing: antialiased;
+    }
+    a { color: inherit; text-decoration: none; }
+
+    .container { max-width: 1100px; margin: 0 auto; padding: 0 24px; }
+    .accent { color: var(--accent); }
+
+    /* Nav */
+    nav {
+      position: fixed;
+      top: 0; left: 0; right: 0;
+      z-index: 100;
+      background: rgba(15, 23, 42, 0.85);
+      backdrop-filter: blur(12px);
+      border-bottom: 1px solid var(--border);
+    }
+    .nav-inner {
+      max-width: 1100px; margin: 0 auto; padding: 0 24px;
+      height: 64px; display: flex; align-items: center; justify-content: space-between;
+    }
+    .nav-logo { font-size: 1rem; font-weight: 700; letter-spacing: -0.02em; }
+    .nav-logo span { color: var(--accent); }
+    .nav-links { display: flex; gap: 32px; list-style: none; }
+    .nav-links a { font-size: 0.9rem; font-weight: 500; color: var(--muted); transition: color var(--transition); }
+    .nav-links a:hover { color: var(--text); }
+    .nav-links a.active { color: var(--accent); }
+    .nav-cta { background: var(--accent); color: var(--bg) !important; padding: 8px 20px; border-radius: 8px; font-weight: 600 !important; }
+    .nav-cta:hover { opacity: 0.85; }
+    .nav-toggle { display: none; flex-direction: column; gap: 5px; cursor: pointer; padding: 4px; }
+    .nav-toggle span { display: block; width: 22px; height: 2px; background: var(--text); border-radius: 2px; }
+
+    /* Post layout */
+    .post-wrapper {
+      max-width: 720px;
+      margin: 0 auto;
+      padding: 120px 24px 96px;
+    }
+
+    /* Back link */
+    .back-link {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      font-size: 0.875rem;
+      color: var(--muted);
+      font-weight: 500;
+      margin-bottom: 40px;
+      transition: color var(--transition);
+    }
+    .back-link:hover { color: var(--accent); }
+
+    /* Post header */
+    .post-tag {
+      display: inline-block;
+      background: var(--accent-dim);
+      color: var(--accent);
+      font-size: 0.7rem;
+      font-weight: 700;
+      letter-spacing: 0.1em;
+      text-transform: uppercase;
+      padding: 3px 10px;
+      border-radius: 9999px;
+      margin-bottom: 16px;
+    }
+    .post-title {
+      font-size: clamp(1.75rem, 3.5vw, 2.5rem);
+      font-weight: 800;
+      letter-spacing: -0.03em;
+      line-height: 1.2;
+      margin-bottom: 16px;
+    }
+    .post-meta {
+      display: flex;
+      align-items: center;
+      gap: 20px;
+      font-size: 0.875rem;
+      color: var(--muted);
+      padding-bottom: 32px;
+      border-bottom: 1px solid var(--border);
+      margin-bottom: 40px;
+    }
+    .post-author { font-weight: 600; color: var(--text); }
+
+    /* Post body */
+    .post-body { font-size: 1.05rem; line-height: 1.8; color: #cbd5e1; }
+
+    .post-body h2 {
+      font-size: 1.4rem;
+      font-weight: 700;
+      letter-spacing: -0.02em;
+      color: var(--text);
+      margin: 40px 0 16px;
+    }
+    .post-body h3 {
+      font-size: 1.1rem;
+      font-weight: 700;
+      color: var(--text);
+      margin: 28px 0 12px;
+    }
+    .post-body p { margin-bottom: 20px; }
+    .post-body ul, .post-body ol {
+      margin: 0 0 20px 24px;
+    }
+    .post-body li { margin-bottom: 8px; }
+    .post-body strong { color: var(--text); font-weight: 600; }
+    .post-body em { color: var(--accent); font-style: normal; font-weight: 500; }
+
+    .post-body pre {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 20px 24px;
+      overflow-x: auto;
+      margin: 24px 0;
+      font-size: 0.875rem;
+      line-height: 1.6;
+      color: #94a3b8;
+      font-family: 'SF Mono', 'Fira Code', monospace;
+    }
+    .post-body code {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 4px;
+      padding: 2px 6px;
+      font-size: 0.875em;
+      font-family: 'SF Mono', 'Fira Code', monospace;
+      color: var(--accent);
+    }
+    .post-body pre code {
+      background: none; border: none; padding: 0; color: #94a3b8;
+    }
+
+    .callout {
+      background: var(--surface);
+      border-left: 3px solid var(--accent);
+      border-radius: 0 var(--radius) var(--radius) 0;
+      padding: 16px 20px;
+      margin: 24px 0;
+      font-size: 0.95rem;
+      color: var(--muted);
+    }
+    .callout strong { color: var(--text); }
+
+    /* Author bio */
+    .author-bio {
+      display: flex;
+      gap: 16px;
+      align-items: flex-start;
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 24px;
+      margin-top: 56px;
+    }
+    .author-avatar {
+      width: 48px; height: 48px;
+      background: var(--accent-dim);
+      border-radius: 50%;
+      display: flex; align-items: center; justify-content: center;
+      font-size: 1.3rem; flex-shrink: 0;
+    }
+    .author-bio-name { font-weight: 700; margin-bottom: 4px; }
+    .author-bio-text { font-size: 0.875rem; color: var(--muted); line-height: 1.6; }
+    .author-bio-text a { color: var(--accent); }
+
+    /* Footer */
+    footer { border-top: 1px solid var(--border); padding: 32px 0; }
+    .footer-inner { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 16px; }
+    .footer-logo { font-weight: 700; font-size: 0.95rem; }
+    .footer-logo span { color: var(--accent); }
+    .footer-copy { font-size: 0.85rem; color: var(--muted); }
+
+    @media (max-width: 640px) {
+      .nav-links { display: none; }
+      .nav-links.open {
+        display: flex; flex-direction: column;
+        position: fixed; top: 64px; left: 0; right: 0;
+        background: var(--bg); border-bottom: 1px solid var(--border);
+        padding: 20px 24px; gap: 16px;
+      }
+      .nav-toggle { display: flex; }
+    }
+  </style>
+</head>
+<body>
+
+  <nav>
+    <div class="nav-inner">
+      <a href="../index.html" class="nav-logo">Latent<span>Value</span>Lab</a>
+      <ul class="nav-links" id="navLinks">
+        <li><a href="../index.html#about">About</a></li>
+        <li><a href="../index.html#services">Services</a></li>
+        <li><a href="../index.html#process">Process</a></li>
+        <li><a href="../blog.html" class="active">Blog</a></li>
+        <li><a href="../index.html#contact" class="nav-cta">Get in Touch</a></li>
+      </ul>
+      <div class="nav-toggle" id="navToggle"><span></span><span></span><span></span></div>
+    </div>
+  </nav>
+
+  <div class="post-wrapper">
+
+    <a href="../blog.html" class="back-link">← Back to Blog</a>
+
+    <span class="post-tag">Search</span>
+    <h1 class="post-title">How Search Works at Scale: From Query to Result in Milliseconds</h1>
+    <div class="post-meta">
+      <span class="post-author">Zhimin Peng</span>
+      <span>March 15, 2026</span>
+      <span>8 min read</span>
+    </div>
+
+    <div class="post-body">
+
+      <p>
+        Most engineers have used a search engine. Far fewer have built one that needs to handle millions of queries per day, return results in under 100ms, and continuously improve its relevance without human intervention. I spent eight years at Amazon building exactly these kinds of systems for Fire TV, and the gap between a toy search implementation and a production one is enormous.
+      </p>
+
+      <p>
+        This post walks through the architecture of a real-world search system — the key components, the tradeoffs, and the parts that are surprisingly hard.
+      </p>
+
+      <h2>The Naive Mental Model (and Why It Breaks)</h2>
+
+      <p>
+        Most people's mental model of search goes something like: user types a query → system finds documents containing those words → rank by relevance → return results. This works fine at small scale. It breaks badly at production scale for several reasons:
+      </p>
+
+      <ul>
+        <li><strong>Vocabulary mismatch:</strong> Users say "action movies with car chases" but your catalog says "high-octane thriller featuring vehicular pursuit sequences."</li>
+        <li><strong>Latency:</strong> Scanning millions of documents on every query is too slow.</li>
+        <li><strong>Relevance:</strong> Keyword overlap is a terrible proxy for what the user actually wants.</li>
+        <li><strong>Personalization:</strong> The same query from two different users might deserve completely different results.</li>
+      </ul>
+
+      <p>
+        Production search systems solve each of these problems with dedicated subsystems. Let's walk through them.
+      </p>
+
+      <h2>Layer 1: Query Understanding</h2>
+
+      <p>
+        Before you even touch your index, you need to understand what the user is actually asking for. Query understanding is a pipeline that typically includes:
+      </p>
+
+      <h3>Query Rewriting</h3>
+      <p>
+        Spelling correction, synonym expansion, and query normalization. "avngrs" → "avengers". "sci fi" → "science fiction". This is harder than it sounds because you want to rewrite confidently when the original is clearly wrong, and leave it alone when it might be intentional (e.g., a niche brand name).
+      </p>
+
+      <h3>Intent Classification</h3>
+      <p>
+        Is this a navigational query ("Ted Lasso Season 2"), an exploratory query ("something funny to watch"), or a task-based query ("action movies for kids")? Different intents call for completely different retrieval and ranking strategies.
+      </p>
+
+      <h3>Entity Recognition</h3>
+      <p>
+        Identifying that "Tom Hanks comedies" contains a person entity ("Tom Hanks") and a genre constraint ("comedies") lets downstream systems do structured retrieval rather than just keyword matching.
+      </p>
+
+      <div class="callout">
+        <strong>Key insight:</strong> The quality of your query understanding caps the quality of everything downstream. A perfect ranker can't save you if you've fundamentally misunderstood the query.
+      </div>
+
+      <h2>Layer 2: Retrieval</h2>
+
+      <p>
+        Retrieval is the problem of efficiently finding candidate documents from a corpus of millions. You can't rank what you haven't retrieved, and you can't afford to rank everything. The goal is to retrieve a few thousand highly relevant candidates quickly.
+      </p>
+
+      <h3>Inverted Index (Sparse Retrieval)</h3>
+      <p>
+        The classic approach: build an index mapping each term to the list of documents containing it. Fast, interpretable, and works well for exact and near-exact matches. Systems like Elasticsearch/Lucene use this under the hood.
+      </p>
+
+      <h3>Dense Retrieval (Embeddings)</h3>
+      <p>
+        Encode both queries and documents as dense vectors using a neural model, then find the nearest neighbors in vector space. This handles semantic similarity — "action film with car chases" matches "Fast & Furious" even without shared keywords. The challenge is the embedding model needs to be trained on your specific domain and kept up to date.
+      </p>
+
+      <h3>Hybrid Retrieval</h3>
+      <p>
+        In practice, the best systems combine both. Sparse retrieval is great for precision (exact matches), dense retrieval is great for recall (semantic matches). Merging the two candidate sets, often with reciprocal rank fusion, consistently outperforms either approach alone.
+      </p>
+
+      <h2>Layer 3: Ranking</h2>
+
+      <p>
+        You've retrieved 2,000 candidates. Now you need to rank them. This is where most of the ML complexity lives.
+      </p>
+
+      <h3>Feature Engineering</h3>
+      <p>
+        A ranker typically consumes hundreds of features: query-document text similarity scores, document popularity signals, user engagement history, contextual signals (time of day, device type), content metadata, and more. The feature pipeline is often as complex as the model itself.
+      </p>
+
+      <h3>Learning to Rank</h3>
+      <p>
+        Models are trained on implicit feedback (clicks, completions, dwell time) or explicit labels. Pairwise and listwise approaches (LambdaMART, neural rankers) consistently outperform pointwise approaches because they directly optimize for the ranking objective rather than predicting absolute relevance scores.
+      </p>
+
+      <h3>Two-Stage Ranking</h3>
+      <p>
+        A lightweight model first re-ranks 2,000 candidates to ~200 (fast, cheaper features). A heavier model then re-ranks those 200 to the final top-10 (slower, richer features, can use the actual query and document text). This keeps latency in check while allowing expensive models where it matters most.
+      </p>
+
+      <h2>Layer 4: Personalization</h2>
+
+      <p>
+        The same query from two different users should often return different results. Someone who watches horror films should get different results for "thriller" than someone who watches romantic comedies. Personalization can be injected at multiple layers:
+      </p>
+
+      <ul>
+        <li><strong>Retrieval:</strong> Bias candidate retrieval toward content similar to what the user has engaged with</li>
+        <li><strong>Ranking:</strong> Include user embedding features directly in the ranking model</li>
+        <li><strong>Re-ranking:</strong> Post-hoc re-rank the top results using a personalization signal</li>
+      </ul>
+
+      <p>
+        The cold-start problem (new users with no history) is real. The standard approach is to fall back to popularity-based signals and collect signal aggressively in the early sessions.
+      </p>
+
+      <h2>The Hard Parts Nobody Talks About</h2>
+
+      <p>
+        The components above are well-documented. Here's what's actually hard in practice:
+      </p>
+
+      <ul>
+        <li><strong>Evaluation:</strong> Offline metrics (NDCG, MRR) don't always correlate with online metrics (clicks, engagement). A/B testing at scale is expensive and slow. Building a good evaluation framework is easily 30% of the work.</li>
+        <li><strong>Index freshness:</strong> Your catalog changes constantly. New content, updated metadata, removed content. Keeping the index current without full rebuilds requires careful incremental update pipelines.</li>
+        <li><strong>Query traffic distribution:</strong> The top 1,000 queries account for a huge fraction of traffic, but the long tail (rare, never-seen-before queries) is where most users actually struggle. Systems optimized for head queries often fail badly on the tail.</li>
+        <li><strong>Position bias:</strong> Users click on rank 1 more than rank 2, regardless of quality. Training on click data without correcting for position bias builds a model that learns to predict clicks, not relevance.</li>
+      </ul>
+
+      <h2>Closing Thoughts</h2>
+
+      <p>
+        Building search at scale is fundamentally a systems problem as much as an ML problem. The ML components — query understanding, dense retrieval, learning to rank — get most of the attention. But the infrastructure that serves them reliably, the evaluation frameworks that tell you if they're working, and the data pipelines that keep them fresh are equally important.
+      </p>
+
+      <p>
+        If you're building search for your product and want to talk through the architecture, <a href="../index.html#contact" style="color: var(--accent);">reach out</a> — this is exactly the kind of problem I work on.
+      </p>
+
+      <div class="author-bio">
+        <div class="author-avatar">👤</div>
+        <div>
+          <div class="author-bio-name">Zhimin Peng, PhD</div>
+          <p class="author-bio-text">
+            Founder of Latent Value Lab. Former Principal Applied Scientist at Amazon, where he built search, recommendation, and agentic AI systems for Fire TV. PhD in Applied Mathematics from UCLA. <a href="../index.html#contact">Get in touch</a>.
+          </p>
+        </div>
+      </div>
+
+    </div>
+  </div>
+
+  <footer>
+    <div class="container">
+      <div class="footer-inner">
+        <div class="footer-logo">Latent<span>Value</span>Lab LLC</div>
+        <div class="footer-copy">© 2026 Latent Value Lab LLC. Based in Sunnyvale, CA.</div>
+      </div>
+    </div>
+  </footer>
+
+  <script>
+    const toggle = document.getElementById('navToggle');
+    const links = document.getElementById('navLinks');
+    toggle.addEventListener('click', () => links.classList.toggle('open'));
+    links.querySelectorAll('a').forEach(a => a.addEventListener('click', () => links.classList.remove('open')));
+  </script>
+
+</body>
+</html>
